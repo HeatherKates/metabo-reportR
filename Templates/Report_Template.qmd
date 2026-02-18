@@ -1,0 +1,482 @@
+---
+title: "Untargeted Metabolomics Analysis Report"
+subtitle: "Southeast Center for Integrated Metabolomics (SECIM)"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+    smooth-scroll: true
+    fig-width: 10
+    fig-height: 8
+params:
+  client: "ExampleClient"
+  PI_name: "Dr. Jane Smith"
+  test_type: "t.test"
+  contrast_var: "Class"
+  input_file: "InputFiles/example.xlsx"
+  data_file: "Results/ExampleClient/ExampleClient_ReportData.qs"
+  processing_time: 10.5
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center"
+)
+```
+
+```{r load-libraries}
+#| label: load-libraries
+#| include: false
+
+suppressPackageStartupMessages({
+  library(qs)
+  library(dplyr)
+  library(ggplot2)
+  library(plotly)
+  library(DT)
+  library(stringr)
+  library(RColorBrewer)
+  library(heatmaply)
+  library(gridExtra)
+  library(grid)
+  library(car)
+  library(htmltools)
+  library(downloadthis)
+})
+```
+
+```{r load-data}
+#| label: load-data
+#| include: false
+
+# Load serialized results from Stage 1
+if (!file.exists(params$data_file)) {
+  stop(sprintf("Data file not found: %s", params$data_file))
+}
+
+ReportInput <- qs::qread(params$data_file)
+Client_Data_Download <- ReportInput
+
+# Extract parameters
+client <- params$client
+PI_name <- params$PI_name
+test_type <- params$test_type
+contrast_var <- params$contrast_var
+```
+
+```{r process-data}
+#| label: process-data
+#| include: false
+
+# Convert confidence levels: 1 → High, 3 → Low
+modify_data_frame <- function(df) {
+  if ("Level" %in% colnames(df)) {
+    colnames(df)[colnames(df) == "Level"] <- "ID_confidence"
+    df$ID_confidence <- as.character(df$ID_confidence)
+    df$ID_confidence[df$ID_confidence == "1"] <- "High"
+    df$ID_confidence[df$ID_confidence == "3"] <- "Low"
+  }
+  return(df)
+}
+
+Client_Data_Download <- lapply(Client_Data_Download, function(x) {
+  if (is.data.frame(x)) modify_data_frame(x) else x
+})
+
+# Remove "Zref_" prefixes
+clean_data <- function(df) {
+  colnames(df) <- gsub("Zref_", "", colnames(df))
+  df[] <- lapply(df, function(x) {
+    if (is.character(x)) gsub("Zref_", "", x)
+    else if (is.factor(x)) { levels(x) <- gsub("Zref_", "", levels(x)); x }
+    else x
+  })
+  return(df)
+}
+
+for (i in seq_along(Client_Data_Download)) {
+  if (is.data.frame(Client_Data_Download[[i]])) {
+    Client_Data_Download[[i]] <- clean_data(Client_Data_Download[[i]])
+  }
+}
+
+# Determine significance threshold
+if (test_type %in% c("lm", "lme", "anova", "t.test")) {
+  p_type <- ifelse(
+    nrow(Client_Data_Download[["report_results"]] %>% filter(adj.p.value < 0.05)) > 10,
+    "adj.p.value", "p.value"
+  )
+  sig_knowns <- nrow(
+    Client_Data_Download[["report_results"]] %>%
+      filter(!!sym(p_type) < 0.05, ID_confidence == "High")
+  )
+} else if (test_type == "nostats") {
+  p_type <- "log2FC"
+  sig_knowns <- nrow(
+    Client_Data_Download[["report_results"]] %>%
+      filter(abs(log2FC) > 0.58, ID_confidence == "High")
+  )
+}
+
+contrasts <- levels(as.factor(Client_Data_Download[["report_results"]]$contrast))
+```
+
+# Project Summary
+
+**Principal Investigator:** `r PI_name`  
+**Client:** `r client`  
+**Analysis Date:** `r format(Sys.time(), '%B %d, %Y')`  
+**Processing Time:** `r sprintf("%.2f minutes", params$processing_time)`
+
+## Sample Information
+
+```{r sample-table}
+#| label: sample-table
+
+datatable(
+  data.frame(table(Client_Data_Download$metadata[[contrast_var]])),
+  colnames = c(contrast_var, "N"),
+  options = list(dom = 't', paging = FALSE, searching = FALSE, ordering = FALSE),
+  rownames = FALSE
+)
+```
+
+## Download Results
+
+```{r download-button}
+#| label: download-button
+
+# Prepare Excel download
+Client_Data_Download_out <- Client_Data_Download[!grepl("View", names(Client_Data_Download))]
+
+Client_Data_Download_out %>%
+  download_this(
+    output_name = paste0(client, "_Results"),
+    output_extension = ".xlsx",
+    button_label = "Download Complete Results",
+    button_type = "primary",
+    has_icon = TRUE,
+    icon = "fa fa-download"
+  )
+```
+
+# Methods
+
+## Instrumental Analysis
+
+Global metabolomics profiling was performed on a **Thermo Q-Exactive Orbitrap** mass spectrometer with Dionex UHPLC.
+
+- **Column:** ACE 18-PFP (100 × 2.1 mm, 2 µm)
+- **Mobile Phases:** A = 0.1% formic acid in water; B = acetonitrile
+- **Flow Rate:** 350 µL/min at 25°C
+- **Ionization:** Positive and negative heated electrospray
+- **Resolution:** 35,000 at m/z 200
+
+## Data Processing & Statistical Analysis
+
+```{r methods-text}
+#| label: methods-text
+#| results: asis
+
+cat("**Feature Detection:** MZmine was used for peak detection, deisotoping, and alignment.\n\n")
+cat("**Quality Control:** Blank feature filtering (IQR method) and KNN imputation via MetaboAnalystR.\n\n")
+cat("**Normalization:** Sum normalization, log transformation, and Pareto scaling.\n\n")
+
+if (test_type == "t.test") {
+  cat("**Statistics:** Welch's t-test with FDR correction (Benjamini-Hochberg).\n")
+} else if (test_type == "anova") {
+  cat("**Statistics:** ANOVA with post-hoc pairwise comparisons via estimated marginal means (EMMs).\n")
+} else if (test_type %in% c("lm", "lme")) {
+  cat("**Statistics:** Linear mixed model with post-hoc EMMs comparisons.\n")
+} else {
+  cat("**Analysis:** Fold-change analysis (|log2FC| > 1.5 threshold).\n")
+}
+```
+
+# Results
+
+## Principal Component Analysis
+
+```{r pca-plot}
+#| label: pca-plot
+#| fig-width: 10
+#| fig-height: 6
+
+# Combine normalized data
+PCA_DATA <- t(rbind(
+  Client_Data_Download[["Neg.normalized.data"]][, 3:(ncol(Client_Data_Download[["Neg.normalized.data"]]) - 2)],
+  Client_Data_Download[["Pos.normalized.data"]][, 3:(ncol(Client_Data_Download[["Pos.normalized.data"]]) - 2)]
+))
+
+# Remove metadata rows
+metadata_rows <- which(is.na(as.numeric(PCA_DATA[, 1])))
+if (length(metadata_rows) > 0) PCA_DATA <- PCA_DATA[-metadata_rows, ]
+
+# Perform PCA
+numsonly <- data.frame(lapply(as.data.frame(PCA_DATA[, -1]), as.numeric))
+pca_res <- prcomp(numsonly, center = TRUE, scale. = FALSE, rank. = 2)
+scores <- as.data.frame(pca_res$x)
+
+# Add metadata
+scores$Sample <- rownames(PCA_DATA)
+scores$Group <- Client_Data_Download$metadata[[contrast_var]][match(scores$Sample, rownames(Client_Data_Download$metadata))]
+
+# Interactive PCA plot
+colors <- RColorBrewer::brewer.pal(max(3, length(unique(scores$Group))), "Set1")
+
+fig <- plot_ly()
+
+# Add ellipses and points per group
+for (group in unique(scores$Group)) {
+  group_data <- scores[scores$Group == group, ]
+  group_color <- colors[which(unique(scores$Group) == group)]
+  
+  # Ellipse
+  if (nrow(group_data) > 2) {
+    ellipse_coords <- car::dataEllipse(
+      group_data$PC1, group_data$PC2,
+      levels = 0.68, plot.points = FALSE, draw = FALSE
+    )
+    
+    fig <- fig %>%
+      add_polygons(
+        x = ellipse_coords[, 1], y = ellipse_coords[, 2],
+        line = list(color = group_color, dash = "dot"),
+        fillcolor = group_color, opacity = 0.3,
+        showlegend = FALSE, hoverinfo = "skip"
+      )
+  }
+  
+  # Points
+  fig <- fig %>%
+    add_trace(
+      data = group_data,
+      x = ~PC1, y = ~PC2,
+      type = "scatter", mode = "markers",
+      name = group,
+      marker = list(color = group_color, size = 10),
+      text = ~Sample,
+      hovertemplate = paste0("<b>", group, "</b><br>%{text}<br>PC1: %{x:.2f}<br>PC2: %{y:.2f}<extra></extra>")
+    )
+}
+
+fig <- fig %>%
+  layout(
+    title = "Principal Component Analysis",
+    xaxis = list(title = sprintf("PC1 (%.1f%% variance)", summary(pca_res)$importance[2, 1] * 100)),
+    yaxis = list(title = sprintf("PC2 (%.1f%% variance)", summary(pca_res)$importance[2, 2] * 100)),
+    hovermode = "closest"
+  )
+
+fig
+```
+
+## Significantly Changed Metabolites
+
+```{r sig-metabolites-table}
+#| label: sig-metabolites-table
+
+if (p_type == "log2FC") {
+  results_filtered <- Client_Data_Download[["report_results"]] %>%
+    filter(abs(log2FC) > 1.5) %>%
+    select(compound, ID_confidence, contrast, FC, log2FC) %>%
+    arrange(desc(abs(log2FC)))
+  
+  caption_text <- "Changed metabolites (|log2FC| > 1.5)"
+} else {
+  results_filtered <- Client_Data_Download[["report_results"]] %>%
+    filter(!!sym(p_type) < 0.05) %>%
+    select(compound, !!sym(p_type), ID_confidence, contrast, FC, log2FC) %>%
+    arrange(!!sym(p_type))
+  
+  caption_text <- sprintf("Significantly changed metabolites (%s < 0.05)", p_type)
+}
+
+datatable(
+  results_filtered,
+  caption = caption_text,
+  filter = "top",
+  options = list(
+    pageLength = 25,
+    scrollX = TRUE,
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel')
+  ),
+  extensions = 'Buttons'
+) %>%
+  formatRound(columns = c("FC", "log2FC"), digits = 3)
+```
+
+## Volcano Plots {.tabset}
+
+::: {.callout-tip}
+## Interactive Features
+- Hover over points to view metabolite names
+- **Red:** Significant + large fold-change
+- **Orange:** Significant only
+- **Black:** Large fold-change only
+- **Gray:** Not significant
+:::
+
+```{r volcano-plots}
+#| label: volcano-plots
+#| results: asis
+
+if (test_type != "nostats") {
+  for (i in seq_along(contrasts)) {
+    cat(sprintf("\n### %s\n\n", contrasts[i]))
+    
+    volcano_data <- Client_Data_Download[["report_results"]] %>%
+      filter(contrast == contrasts[i])
+    
+    # Assign groups
+    volcano_data$group <- "NotSignificant"
+    volcano_data$group[volcano_data[[p_type]] < 0.05 & abs(volcano_data$log2FC) < 0.58] <- "Significant"
+    volcano_data$group[abs(volcano_data$log2FC) > 0.58] <- "log2FC"
+    volcano_data$group[volcano_data[[p_type]] < 0.05 & abs(volcano_data$log2FC) > 0.58] <- "Significant&log2FC"
+    
+    # Create plot
+    p <- plot_ly(
+      data = volcano_data,
+      x = ~log2FC,
+      y = ~-log10(get(p_type)),
+      color = ~group,
+      colors = c(
+        "NotSignificant" = "gray",
+        "Significant" = "orange",
+        "log2FC" = "black",
+        "Significant&log2FC" = "red"
+      ),
+      text = ~paste0(compound, " (", ID_confidence, ")"),
+      hovertemplate = "%{text}<br>log2FC: %{x:.2f}<br>-log10(p): %{y:.2f}<extra></extra>",
+      type = "scatter",
+      mode = "markers"
+    ) %>%
+      layout(
+        title = sprintf("Volcano Plot: %s", contrasts[i]),
+        xaxis = list(title = "log2(Fold Change)", zeroline = TRUE),
+        yaxis = list(title = sprintf("-log10(%s)", p_type)),
+        showlegend = TRUE
+      )
+    
+    print(htmltools::tagList(p))
+    cat("\n\n")
+  }
+}
+```
+
+## Normalization Quality Control {.tabset}
+
+### Positive Ion Mode
+
+```{r norm-pos}
+#| label: norm-pos
+#| fig-height: 10
+
+grid.arrange(
+  Client_Data_Download[["Pos.FeatureView"]]$grobs[[1]],
+  Client_Data_Download[["Pos.FeatureView"]]$grobs[[2]],
+  Client_Data_Download[["Pos.FeatureView"]]$grobs[[3]],
+  Client_Data_Download[["Pos.FeatureView"]]$grobs[[4]],
+  ncol = 2,
+  top = textGrob("Positive Mode - Feature View", gp = gpar(fontsize = 14, font = 2))
+)
+```
+
+### Negative Ion Mode
+
+```{r norm-neg}
+#| label: norm-neg
+#| fig-height: 10
+
+grid.arrange(
+  Client_Data_Download[["Neg.FeatureView"]]$grobs[[1]],
+  Client_Data_Download[["Neg.FeatureView"]]$grobs[[2]],
+  Client_Data_Download[["Neg.FeatureView"]]$grobs[[3]],
+  Client_Data_Download[["Neg.FeatureView"]]$grobs[[4]],
+  ncol = 2,
+  top = textGrob("Negative Mode - Feature View", gp = gpar(fontsize = 14, font = 2))
+)
+```
+
+## Top Changed Metabolites Heatmap {.tabset}
+
+```{r heatmaps}
+#| label: heatmaps
+#| results: asis
+#| fig-height: 10
+
+for (i in seq_along(contrasts)) {
+  cat(sprintf("\n### %s\n\n", contrasts[i]))
+  
+  # Get top 20 metabolites
+  if (p_type == "log2FC") {
+    top_metabs <- Client_Data_Download[["report_results"]] %>%
+      filter(contrast == contrasts[i], abs(log2FC) > 1.5) %>%
+      arrange(desc(abs(log2FC))) %>%
+      slice_head(n = 20) %>%
+      pull(row.mode)
+  } else {
+    top_metabs <- Client_Data_Download[["report_results"]] %>%
+      filter(contrast == contrasts[i], !!sym(p_type) < 0.05) %>%
+      arrange(!!sym(p_type)) %>%
+      slice_head(n = 20) %>%
+      pull(row.mode)
+  }
+  
+  if (length(top_metabs) > 0) {
+    # Extract normalized data
+    norm_data <- rbind(
+      Client_Data_Download[["Pos.normalized.data"]],
+      Client_Data_Download[["Neg.normalized.data"]]
+    )
+    
+    norm_data$row.mode <- paste(norm_data$row.ID, norm_data$mode, sep = "_")
+    heatmap_data <- norm_data %>%
+      filter(row.mode %in% top_metabs) %>%
+      select(-row.ID, -mode, -row.mode, -compound, -mz, -rt)
+    
+    rownames(heatmap_data) <- norm_data$compound[norm_data$row.mode %in% top_metabs]
+    heatmap_data <- as.matrix(heatmap_data)
+    
+    # Create heatmap
+    hm <- heatmaply(
+      heatmap_data,
+      scale = "row",
+      colors = colorRampPalette(c("darkblue", "white", "darkred"))(100),
+      showticklabels = c(FALSE, TRUE),
+      ylab = "Metabolites",
+      xlab = "Samples",
+      main = sprintf("Top Metabolites: %s", contrasts[i]),
+      fontsize_row = 10
+    )
+    
+    print(htmltools::tagList(hm))
+  } else {
+    cat("*No significantly changed metabolites for this contrast.*\n")
+  }
+  
+  cat("\n\n")
+}
+```
+
+# Session Information
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```
