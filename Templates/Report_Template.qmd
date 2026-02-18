@@ -55,7 +55,13 @@ suppressPackageStartupMessages({
   library(car)
   library(htmltools)
   library(downloadthis)
+  library(MetaboAnalystR)
+  library(KEGGREST)
 })
+
+# Source analysis functions
+source("R/MSEA.smpdb.R")
+source("R/pathview.R")
 ```
 
 ```{r load-data}
@@ -324,6 +330,7 @@ datatable(
 
 ::: {.callout-tip}
 ## Interactive Features
+
 - Hover over points to view metabolite names
 - **Red:** Significant + large fold-change
 - **Orange:** Significant only
@@ -375,6 +382,204 @@ if (test_type != "nostats") {
     print(htmltools::tagList(p))
     cat("\n\n")
   }
+}
+```
+
+## Metabolite Set Enrichment Analysis {.tabset}
+
+::: {.callout-note}
+## About MSEA
+
+Metabolite Set Enrichment Analysis (MSEA) identifies biological pathways that are over-represented in your list of significantly changed metabolites. This analysis uses the **Small Molecule Pathway Database (SMPDB)** to test whether certain pathways contain more changed metabolites than would be expected by chance.
+
+**Enrichment Ratio** = Observed Hits / Expected Hits
+:::
+
+```{r msea-analysis}
+#| label: msea-analysis
+#| results: asis
+
+if (test_type != "nostats") {
+  for (i in seq_along(contrasts)) {
+    cat(sprintf("\n### %s\n\n", contrasts[i]))
+    
+    # Run MSEA for this contrast
+    msea_result <- tryCatch({
+      perform_msea_smpdb(
+        results_df = Client_Data_Download[["report_results"]],
+        contrast = contrasts[i],
+        p_threshold = 0.05,
+        p_type = p_type,
+        output_dir = file.path("Results", client, "MSEA"),
+        plot_filename = sprintf("MSEA_contrast_%d.png", i),
+        dpi = 300
+      )
+    }, error = function(e) {
+      cat(sprintf("⚠ MSEA failed for contrast %s: %s\n\n", contrasts[i], e$message))
+      NULL
+    })
+    
+      if (!is.null(msea_result) && !is.null(msea_result$result_table)) {
+      # Display enrichment plot
+      cat(sprintf("#### Enriched Pathways\n\n"))
+      cat(sprintf("![MSEA Enrichment Plot](%s)\n\n", msea_result$plot_path))
+      
+      # Display results table
+      cat(sprintf("#### Results Table\n\n"))
+      
+      datatable(
+        msea_result$result_table,
+        caption = sprintf("MSEA Results: %s", contrasts[i]),
+        options = list(
+          pageLength = 10,
+          scrollX = TRUE
+        ),
+        rownames = FALSE
+      ) %>%
+        formatRound(columns = c("Expected", "Enrichment.Ratio", "p.value", "FDR"), digits = 4)
+      
+    } else {
+      cat(sprintf("*No significant metabolite enrichment found for contrast: %s*\n\n", contrasts[i]))
+      cat(sprintf("This may occur if:\n"))
+      cat("- Fewer than 3 metabolites have KEGG IDs\n")
+      cat("- No pathways are significantly enriched (p > 0.05)\n")
+      cat("- Compound name mapping failed\n\n")
+    }
+    
+    cat("\n\n")
+  }
+} else {
+  cat("*MSEA is not performed for fold-change-only analysis.*\n")
+}
+```
+
+## KEGG Pathway Analysis {.tabset}
+
+::: {.callout-tip}
+## Interactive Pathway Links
+
+Click the links below to view pathways on the KEGG website with your changed metabolites highlighted. Increased metabolites appear in red, decreased metabolites in blue.
+
+- **View:** Opens standard KEGG pathway diagram
+- **View Highlighted:** Opens pathway with your metabolites color-coded
+:::
+
+```{r kegg-pathway-links}
+#| label: kegg-pathway-links
+#| results: asis
+
+if (test_type != "nostats") {
+  for (i in seq_along(contrasts)) {
+    cat(sprintf("\n### %s\n\n", contrasts[i]))
+    
+    # Extract KEGG compounds for this contrast
+    compounds <- tryCatch({
+      extract_kegg_compounds(
+        results_df = Client_Data_Download[["report_results"]],
+        contrast = contrasts[i],
+        p_type = p_type,
+        p_threshold = 0.05
+      )
+    }, error = function(e) {
+      cat(sprintf("⚠ Failed to extract KEGG compounds: %s\n\n", e$message))
+      NULL
+    })
+    
+    if (!is.null(compounds) && 
+        (length(compounds$up_compounds) > 0 || length(compounds$down_compounds) > 0)) {
+      
+      cat(sprintf("**Changed metabolites with KEGG IDs:** %d increased, %d decreased\n\n",
+                  length(compounds$up_compounds), length(compounds$down_compounds)))
+      
+      # Query KEGG for pathways
+      get_pathways_safe <- function(compound_id) {
+        tryCatch({
+          pathway_list <- keggLink("pathway", paste0("cpd:", compound_id))
+          return(gsub("path:", "", pathway_list))
+        }, error = function(e) {
+          return(character(0))
+        })
+      }
+      
+      all_compounds <- c(compounds$up_compounds, compounds$down_compounds)
+      compound_pathways <- unique(unlist(lapply(all_compounds, get_pathways_safe)))
+      
+      if (length(compound_pathways) > 0) {
+        # Get pathway information
+        pathway_info <- tryCatch({
+          keggGet(compound_pathways)
+        }, error = function(e) {
+          NULL
+        })
+        
+        if (!is.null(pathway_info)) {
+          pathway_df <- data.frame(
+            Pathway_ID = compound_pathways,
+            Pathway_Name = sapply(pathway_info, function(x) {
+              if ("NAME" %in% names(x)) x$NAME[1] else "Unknown"
+            }),
+            Class = sapply(pathway_info, function(x) {
+              if ("CLASS" %in% names(x)) paste(x$CLASS, collapse = " > ") else "Unclassified"
+            }),
+            stringsAsFactors = FALSE
+          )
+          
+          # Filter out global/overview maps
+          global_keywords <- c("Metabolic pathways", "Biosynthesis of secondary metabolites",
+                               "Global and overview", "Chemical structure transformation")
+          
+          pathway_df <- pathway_df %>%
+            filter(!grepl(paste(global_keywords, collapse = "|"), Pathway_Name))
+          
+          if (nrow(pathway_df) > 0) {
+            # Create KEGG links
+            pathway_df <- pathway_df %>%
+              mutate(
+                KEGG_Link = sprintf(
+                  '<a href="https://www.genome.jp/pathway/%s" target="_blank">🔗 View</a>',
+                  Pathway_ID
+                ),
+                Highlighted_Link = sprintf(
+                  '<a href="https://www.genome.jp/pathway/%s+%s" target="_blank">🔗 View Highlighted</a>',
+                  gsub("^map", "hsa", Pathway_ID),
+                  paste(all_compounds, collapse = "+")
+                )
+              )
+            
+            # Display interactive table
+            datatable(
+              pathway_df %>% select(Pathway_Name, Class, KEGG_Link, Highlighted_Link),
+              escape = FALSE,
+              caption = sprintf("KEGG Pathways: %s", contrasts[i]),
+              options = list(
+                pageLength = 15,
+                scrollX = TRUE,
+                dom = 'Bfrtip',
+                buttons = c('copy', 'csv')
+              ),
+              extensions = 'Buttons',
+              rownames = FALSE
+            )
+            
+          } else {
+            cat("*No specific pathways found (only global/overview maps).*\n\n")
+          }
+        } else {
+          cat("*Failed to retrieve pathway information from KEGG.*\n\n")
+        }
+        
+      } else {
+        cat("*No KEGG pathways found for changed metabolites.*\n\n")
+      }
+      
+    } else {
+      cat("*No metabolites with KEGG IDs found for this contrast.*\n\n")
+    }
+    
+    cat("\n\n")
+  }
+} else {
+  cat("*KEGG pathway analysis not performed for fold-change-only analysis.*\n")
 }
 ```
 
