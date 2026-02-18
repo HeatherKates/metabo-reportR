@@ -77,14 +77,12 @@ Generate_Report_Inputs <- function(
     library(omu)
     library(metid)
     library(MetaboAnalystR)
+    library(metid)
   })
   
   # Source internal scripts (relative paths)
   source("R/SECIM_Metabolomics.R")
   source("R/Norm_Plots.R")
-  source("R/metid_SECIM-main/R/annotate_metabolites_mass_dataset.R")
-  source("R/metid_SECIM-main/R/mzIdentify_mass_dataset.R")
-  source("R/metid_SECIM-main/R/convert_mzmine2mass_dataset.R")
   source("R/SanityCheck.HRK.R")
   
   # ===========================
