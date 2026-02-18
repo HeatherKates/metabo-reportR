@@ -1,0 +1,63 @@
+# ============================================
+# SECIM Metabolomics Study Configuration
+# ============================================
+# Copy this template and modify for your study
+# Then run: Rscript Run_Pipeline.R config/your_study.yaml
+
+# Project Information
+project:
+  client: "ExampleClient_2024"
+  PI_name: "Dr. Jane Smith"
+
+# Input Files
+input:
+  file: "InputFiles/Client_Input_Example.xlsx"
+  mzmine_version: 3  # 2 or 3
+
+# Sample Filtering
+filtering:
+  # Samples to exclude BEFORE normalization (failed QC)
+  samples_to_drop_pre_norm: null
+  # Example:
+  #   - "Sample_123"
+  #   - "Sample_456"
+  
+  # Samples to exclude AFTER normalization (subset analysis)
+  samples_to_drop_post_norm: null
+  # Example:
+  #   - "QC_01"
+  #   - "Blank_02"
+
+# Statistical Configuration
+statistics:
+  test_type: "t.test"  # Options: t.test, anova, lm, lme, nostats
+  contrast_var: "Class"
+  reference_level: null  # Set to null for alphabetical order, or specify: "Control"
+  paired: false
+  num_meta: 1  # Number of metadata rows
+  
+  # Subset analyses (list of pairwise contrasts)
+  subset: null
+  # Example:
+  #   - ["Treatment_A", "Control"]
+  #   - ["Treatment_B", "Control"]
+  
+  # Advanced models (required if test_type = anova, lm, or lme)
+  anova_formula: null  # Example: "id ~ Class + Error(Subject)"
+  lm_model: null       # Example: "Metabolite ~ Class + (1|Subject)"
+
+# Metabolite Annotation
+annotation:
+  SECIM_column: "ACE-PFP"  # Options: ACE-PFP, Evospere-PFP
+  metid_DB_file: "kegg_ms1_database0.0.3.rda"
+  # Options:
+  #   - kegg_ms1_database0.0.3.rda
+  #   - hmdb_database0.0.3.rda
+  #   - bloodexposome_database1.0.rda
+
+# Data Processing
+processing:
+  batch_correct: null  # Options: null, ComBat, limma
+  rowNorm: "SumNorm"   # Options: QuantileNorm, CompNorm, SumNorm, MedianNorm, SpecNorm
+  transNorm: "LogNorm" # Options: LogNorm, CrNorm
+  scaleNorm: "ParetoNorm"  # Options: MeanCenter, AutoNorm, ParetoNorm, RangeNorm

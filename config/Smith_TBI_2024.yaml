@@ -1,0 +1,35 @@
+# Dr. Smith TBI Study - March 2024
+
+project:
+  client: "Smith_TBI_2024"
+  PI_name: "Dr. Jane Smith"
+
+input:
+  file: "InputFiles/Smith_TBI_MZmine3_output.xlsx"
+  mzmine_version: 3
+
+filtering:
+  samples_to_drop_pre_norm:
+    - "Sample_TBI_045"
+    - "Sample_Control_023"
+  samples_to_drop_post_norm: null
+
+statistics:
+  test_type: "t.test"
+  contrast_var: "Condition"
+  reference_level: "Control"
+  paired: true
+  num_meta: 1
+  subset: null
+  anova_formula: null
+  lm_model: null
+
+annotation:
+  SECIM_column: "ACE-PFP"
+  metid_DB_file: "kegg_ms1_database0.0.3.rda"
+
+processing:
+  batch_correct: "ComBat"
+  rowNorm: "SumNorm"
+  transNorm: "LogNorm"
+  scaleNorm: "ParetoNorm"
